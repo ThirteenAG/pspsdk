@@ -1,5 +1,6 @@
 """Compile real C/C++ PRXs, preserve outputs on failure, and bound cleanup."""
 import json
+import struct
 from pathlib import Path
 import subprocess
 import tempfile
@@ -16,13 +17,35 @@ PSP_END_EXPORTS
 
 
 class ModuleBuild(unittest.TestCase):
+    def test_configuration_defines(self):
+        for configuration in ('Release', 'Debug'):
+            with self.subTest(configuration=configuration), tempfile.TemporaryDirectory(prefix='psp config ') as directory:
+                root = Path(directory)
+                expected = configuration == 'Debug'
+                checks = ('#if !defined(DEBUG) || !defined(_DEBUG) || defined(NDEBUG)\n'
+                          if expected else '#if defined(DEBUG) || defined(_DEBUG) || !defined(NDEBUG)\n')
+                (root / 'main.c').write_text(
+                    '#include <pspkernel.h>\n' + checks + '#error Wrong configuration\n#endif\n'
+                    'PSP_MODULE_INFO("ConfigProbe", 0, 1, 0);\n'
+                    'int module_start(SceSize n, void* p) {(void)n;(void)p;return sceKernelDelayThread(1);}\n')
+                (root / 'exports.exp').write_text(EXPORTS)
+                project = root / 'module.json'
+                project.write_text(json.dumps(dict(sources=['main.c'], output='out/plugin.prx',
+                                                  exports='exports.exp')))
+                command = ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+                           str(BUILDER), '-Project', str(project)]
+                if expected:
+                    command += ['-Configuration', configuration]
+                result = subprocess.run(command, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_c_cpp_spaces_failure_and_cleanup(self):
         for cpp in (False, True):
             with self.subTest(cpp=cpp), tempfile.TemporaryDirectory(prefix='psp module ') as directory:
                 root = Path(directory)
                 extension = 'cpp' if cpp else 'c'
                 source = root / ('main.' + extension)
-                text = '#include <pspkernel.h>\nPSP_MODULE_INFO("JsonProbe", 0, 1, 0);\n'
+                text = '#include <pspkernel.h>\n#define PROBE_NAME "JsonProbe012345678901234567"\nPSP_MODULE_INFO(PROBE_NAME, 0, 1, 0);\n'
                 if cpp:
                     text += '#include <string>\nstatic std::string probe("constructors");\nint main(int, char**) {return probe.size() == 12 ? 0 : 1;}\n'
                 else:
@@ -39,6 +62,22 @@ class ModuleBuild(unittest.TestCase):
                 outputs = [root / ('out/' + name) for name in ('plugin.prx', 'plugin.elf', 'plugin.prx.map')]
                 previous = [path.read_bytes() for path in outputs]
                 self.assertEqual(previous[0][:7], b'\x7fELF\x01\x01\x01')
+                # C++ must retain the same module identity as C, including macro
+                # expansion. Stringification used to produce "PROBE_NAME".
+                elf = previous[1]
+                start = struct.unpack_from('<I', elf, 32)[0]
+                count, names_index = struct.unpack_from('<HH', elf, 48)
+                sections = [struct.unpack_from('<10I', elf, start + i * 40) for i in range(count)]
+                names = sections[names_index]
+                for section in sections:
+                    begin = names[4] + section[0]
+                    name = elf[begin:elf.index(b'\0', begin)]
+                    if name == b'.rodata.sceModuleInfo':
+                        begin = section[4] + 4
+                        self.assertEqual(elf[begin:begin + 28], b'JsonProbe012345678901234567\0')
+                        break
+                else:
+                    self.fail('Missing module metadata')
                 source.write_text(text + '\nthis is invalid source;\n')
                 result = subprocess.run(command, capture_output=True, text=True)
                 self.assertNotEqual(result.returncode, 0)

@@ -45,17 +45,35 @@ enum PspModuleInfoAttr
 
 #ifdef __cplusplus
 
+/* Keep the C ABI's 27 name bytes plus terminal byte. C++ cannot initialize
+   char[27] with a 27-character string (C permits dropping its terminator).
+   Constant evaluation copies the name without a constructor or startup code. */
+extern "C++" {
+template <unsigned N>
+constexpr _sceModuleInfo __psp_make_module_info(const char (&name)[N],
+	unsigned short attributes, unsigned char major_version, unsigned char minor_version,
+	void *gp, void *ent_top, void *ent_end, void *stub_top, void *stub_end)
+{
+	static_assert(N <= 28, "PSP module name must contain at most 27 characters");
+	_sceModuleInfo info = { attributes, { minor_version, major_version }, {}, 0,
+		gp, ent_top, ent_end, stub_top, stub_end };
+	for (unsigned i = 0; i + 1 < N; ++i)
+		info.modname[i] = name[i];
+	return info;
+}
+}
+
 /* Declare a module.  This must be specified in the source of a library or executable. */
 #define PSP_MODULE_INFO(name, attributes, major_version, minor_version) \
 	extern char __lib_ent_top[], __lib_ent_bottom[];                \
 	extern char __lib_stub_top[], __lib_stub_bottom[];              \
 	extern SceModuleInfo module_info                                \
 		__attribute__((section(".rodata.sceModuleInfo"),        \
-			       aligned(16), unused)) = {                \
-	  attributes, { minor_version, major_version }, #name, 0, _gp,  \
+			       aligned(16), unused)) = __psp_make_module_info( \
+	  name, attributes, major_version, minor_version, _gp,          \
 	  __lib_ent_top, __lib_ent_bottom,                              \
 	  __lib_stub_top, __lib_stub_bottom                             \
-	}
+	)
 #else
 /* Declare a module.  This must be specified in the source of a library or executable. */
 #define PSP_MODULE_INFO(name, attributes, major_version, minor_version) \

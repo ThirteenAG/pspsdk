@@ -1,5 +1,9 @@
 [CmdletBinding()]
-param([Parameter(Mandatory)][string]$Project, [switch]$Clean)
+param(
+    [Parameter(Mandatory)][string]$Project,
+    [ValidateSet('Debug', 'Release')][string]$Configuration = 'Release',
+    [switch]$Clean
+)
 $ErrorActionPreference = 'Stop'
 $sdkRoot = Split-Path -Parent $PSScriptRoot
 $projectPath = (Resolve-Path -LiteralPath $Project).Path
@@ -60,6 +64,10 @@ try {
     foreach ($include in @($projectDirectory, (Join-Path $dev 'psp/include'), (Join-Path $sdk 'include'))) { $flags += '-I' + (UnixPath $include) }
     foreach ($include in $config.includes) { $flags += '-I' + (UnixPath (Join-Path $projectDirectory $include)) }
     foreach ($define in $config.defines) { $flags += '-D' + $define }
+    # Keep the existing optimized guest code in both configurations. Configuration
+    # controls diagnostics/symbols without changing hook timing or allocator policy.
+    if ($Configuration -eq 'Debug') { $flags += @('-UNDEBUG', '-DDEBUG', '-D_DEBUG', '-g') }
+    else { $flags += @('-UDEBUG', '-U_DEBUG', '-DNDEBUG') }
     $cppFlags = @('-fno-exceptions', '-fno-rtti')
     if ($config.PSObject.Properties.Name -contains 'cxx_flags') { $cppFlags = @($config.cxx_flags) }
     $objects = @()

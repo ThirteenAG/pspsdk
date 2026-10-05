@@ -28,6 +28,21 @@ Optional `c_flags` replaces the default C flags; `cxx_flags` supplies additional
 C++ flags (defaults to disabling exceptions/RTTI), and `as_flags` adds assembly
 flags. Unknown fields fail instead of silently ignoring a misspelling.
 
+The default configuration is Release (`NDEBUG`). Pass `-Configuration Debug`
+to define `DEBUG` and `_DEBUG` and emit debug symbols. Both configurations retain
+the existing optimized code flags and write the same output paths; the builder
+recompiles everything, so switching configuration cannot reuse stale objects.
+The configuration defines are applied after manifest defines. WFP and generated
+Visual Studio projects pass their selected configuration to this entry point.
+These defines let plugins omit selected diagnostic calls in Release builds.
+The shared logger remains available in either configuration.
+
+`PSP_MODULE_INFO` accepts a string literal or a macro expanding to one in both
+C and C++. Use `PSP_MODULE_INFO("CLEO", ...)`, rather than an unquoted identifier.
+The C++ metadata initializer requires C++14 or later and is evaluated at compile
+time; it adds no constructors or startup code. Names may contain at most 27
+characters, with the terminating byte retained in the original module-info ABI.
+
 `startup: "module_start"` follows the existing `build_prx.mak` profile with no
 CRT startup files. The plugin supplies `module_start`. This is the default and
 preserves WidescreenFixesPack's C PRX behavior. `startup: "crt"` follows the
@@ -47,4 +62,5 @@ No PPSSPP or game patches, plugin waits or runtime ABI are changed. The legacy
 `vsmake.ps1` remains available for projects with their own SDK makefiles.
 
 Run `python -B -m unittest discover -s plugins -p test_build.py -v` to verify real
-C and C++ builds, paths with spaces, failed-build preservation and bounded clean.
+C and C++ builds, Debug/Release defines, paths with spaces, failed-build preservation
+and bounded clean.
