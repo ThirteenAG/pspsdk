@@ -51,6 +51,16 @@ initialization and C++ constructors work as before. PSP CLEO and C++ template
 projects use this profile. C++ compilation alone does not change the startup
 profile; choose it explicitly.
 
+Minimal C++ modules additionally link a small constructor startup wrapper.
+The builder renames the supplied entry point internally; keep writing
+`extern "C" int module_start(SceSize, void*)` and exporting `module_start`.
+Static constructors run once before that entry point. Destructor registration
+uses 128 fixed slots in the module image; overflowing them rejects startup.
+There is no system heap initialization. Use the plugin's bounded allocator for
+dynamic storage. `__cxa_finalize` is available for explicit cleanup, but this
+profile does not provide unloading: a plugin must restore its patches before
+its code or callback storage can be released.
+
 The builder generates exports into the output's private `.prx.objects` directory,
 links an ELF, fixes imports and generates the PRX with the existing SDK utilities.
 Each stage must succeed before replacing previous PRX/ELF/map outputs. It also
@@ -58,8 +68,17 @@ produces `.prx.map`; cleanup removes only those selected outputs and their priva
 objects. SDK files and other plugin outputs remain untouched. Full compilation
 on each invocation avoids stale objects after manifest or flag changes.
 
-No PPSSPP or game patches, plugin waits or runtime ABI are changed. The legacy
-`vsmake.ps1` remains available for projects with their own SDK makefiles.
+For native-game hooks using injector's C++ frontend, add
+`"PSP_GAME_ABI_COMPAT"` to `defines`. The builder treats f21/f23/f25/f27 as
+caller-saved and reserves f28/f30. Typed `MakeCALL`, `MakeJMP` and inline hooks
+then generate a module-owned callback boundary that preserves both SDK EABI
+and native-game floating-point conventions. This adds no callback allocations.
+Calls through integer addresses remain raw native stubs. C integrations can use
+`psp_game_emit_callback` from `psp/game_abi.h` with their explicit overflow-stack
+size. Caller-sensitive, integer-only C++ inline hooks may opt out through
+`Options::preserve_game_callees`; they must not call floating-point SDK routines.
+
+The legacy `vsmake.ps1` remains available for projects with their own SDK makefiles.
 
 Run `python -B -m unittest discover -s plugins -p test_build.py -v` to verify real
 C and C++ builds, Debug/Release defines, paths with spaces, failed-build preservation

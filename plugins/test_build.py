@@ -17,6 +17,33 @@ PSP_END_EXPORTS
 
 
 class ModuleBuild(unittest.TestCase):
+    def test_minimal_cpp_runtime(self):
+        with tempfile.TemporaryDirectory(prefix='psp cpp runtime ') as directory:
+            root = Path(directory)
+            (root / 'main.cpp').write_text(
+                '#include <pspkernel.h>\n'
+                'PSP_MODULE_INFO("MinimalCppProbe", 0, 1, 0);\n'
+                'static volatile int constructed, destroyed;\n'
+                'struct Owner { Owner() {++constructed;} ~Owner() {++destroyed;} };\n'
+                'static Owner owner;\n'
+                'extern "C" void __cxa_finalize(void*);\n'
+                'extern "C" int module_start(SceSize, void*) {\n'
+                ' if (constructed != 1 || destroyed) return -1;\n'
+                ' __cxa_finalize(0); return destroyed == 1 ? sceKernelDelayThread(1) : -2;\n'
+                '}\n')
+            (root / 'exports.exp').write_text(EXPORTS)
+            project = root / 'module.json'
+            project.write_text(json.dumps(dict(sources=['main.cpp'], output='out/plugin.prx', exports='exports.exp')))
+            result = subprocess.run(['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+                                     str(BUILDER), '-Project', str(project)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            # Check linkage as well as successful output: a minimal C++ PRX must
+            # include the startup wrapper, constructor list, and bounded finalizer.
+            map_text = (root / 'out/plugin.prx.map').read_text()
+            for name in ('plugin_module_start', '__cxa_atexit', '__cxa_finalize', '__plugin_ctors_start'):
+                self.assertIn(name, map_text)
+            self.assertEqual((root / 'out/plugin.prx').read_bytes()[:7], b'\x7fELF\x01\x01\x01')
+
     def test_configuration_defines(self):
         for configuration in ('Release', 'Debug'):
             with self.subTest(configuration=configuration), tempfile.TemporaryDirectory(prefix='psp config ') as directory:

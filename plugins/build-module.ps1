@@ -64,6 +64,12 @@ try {
     foreach ($include in @($projectDirectory, (Join-Path $dev 'psp/include'), (Join-Path $sdk 'include'))) { $flags += '-I' + (UnixPath $include) }
     foreach ($include in $config.includes) { $flags += '-I' + (UnixPath (Join-Path $projectDirectory $include)) }
     foreach ($define in $config.defines) { $flags += '-D' + $define }
+    if (@($config.defines) -contains 'PSP_GAME_ABI_COMPAT') {
+        # SN-compiled games preserve even f20..f30; SDK EABI preserves f20..f27.
+        # Avoid keeping values in their disagreeing registers across native calls.
+        # injector's callback adapters preserve the union on entry from the game.
+        $flags += @('-fcall-used-f21', '-fcall-used-f23', '-fcall-used-f25', '-fcall-used-f27', '-ffixed-f28', '-ffixed-f30')
+    }
     # Keep the existing optimized guest code in both configurations. Configuration
     # controls diagnostics/symbols without changing hook timing or allocator policy.
     if ($Configuration -eq 'Debug') { $flags += @('-UNDEBUG', '-DDEBUG', '-D_DEBUG', '-g') }
@@ -72,10 +78,12 @@ try {
     if ($config.PSObject.Properties.Name -contains 'cxx_flags') { $cppFlags = @($config.cxx_flags) }
     $objects = @()
     $hasCpp = $false
+    $minimalCppRuntime = $startup -eq 'module_start' -and @($sources | Where-Object { [IO.Path]::GetExtension($_) -in @('.cpp', '.cc', '.cxx') }).Count -gt 0
     $index = 0
     foreach ($source in $sources) {
         $extension = [IO.Path]::GetExtension($source)
         $compiler, $compileFlags = $gcc, $flags
+        if ($minimalCppRuntime) { $compileFlags += '-Dmodule_start=plugin_module_start' }
         if ($extension -in @('.cpp', '.cc', '.cxx')) {
             $hasCpp = $true
             $compiler = $gxx
@@ -97,9 +105,16 @@ try {
     & $gcc @flags '-c' (UnixPath $exportSource) '-o' (UnixPath $exportObject)
     if ($LASTEXITCODE) { throw 'PSP export compilation failed.' }
     $objects += UnixPath $exportObject
+    if ($minimalCppRuntime) {
+        $runtimeObject = Join-Path $objectDirectory 'module-runtime.o'
+        & $gcc @flags '-c' (UnixPath (Join-Path $PSScriptRoot 'module-runtime.c')) '-o' (UnixPath $runtimeObject)
+        if ($LASTEXITCODE) { throw 'PSP C++ module startup compilation failed.' }
+        $objects += UnixPath $runtimeObject
+    }
     $linkFlags = @('-G0', ('-L' + (UnixPath $projectDirectory)), ('-L' + (UnixPath (Join-Path $dev 'psp/lib'))), ('-L' + (UnixPath (Join-Path $sdk 'lib'))), '-Wl,-q', ('-Wl,-T' + (UnixPath (Join-Path $sdk 'lib/linkfile.prx'))), '-Wl,-zmax-page-size=128', ('-Wl,-Map,' + (UnixPath ($mapPath + '.tmp'))))
     if ($startup -eq 'crt') { $linkFlags += '-specs=' + (UnixPath (Join-Path $sdk 'lib/prxspecs')) }
     else { $linkFlags += '-nostartfiles' }
+    if ($minimalCppRuntime) { $linkFlags += '-Wl,-T' + (UnixPath (Join-Path $PSScriptRoot 'module-runtime.ld')) }
     $libraries = @($config.libraries)
     if ($hasCpp -and '-lstdc++' -notin $libraries) { $libraries = @('-lstdc++') + $libraries }
     $libraries += @('-lpspdebug', '-lpspdisplay', '-lpspge', '-lpspctrl')
